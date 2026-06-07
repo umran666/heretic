@@ -108,6 +108,56 @@ class Model:
         if self.settings.evaluate_model is not None:
             self.trusted_models[settings.evaluate_model] = settings.trust_remote_code
 
+        # Check if the model is MXFP4-quantized
+        is_mxfp4 = False
+        try:
+            config_dict, _ = PretrainedConfig.get_config_dict(
+                settings.model,
+                trust_remote_code=settings.trust_remote_code,
+                **self.revision_kwargs,
+            )
+            if config_dict.get("quantization_config", {}).get("quant_method") == "mxfp4":
+                is_mxfp4 = True
+        except Exception:
+            pass
+
+        triton_version = None
+        if is_mxfp4:
+            from packaging.version import Version
+
+            try:
+                import triton
+                triton_version = triton.__version__
+            except ImportError:
+                triton_version = None
+
+            # Parse versions
+            torch_v_clean = torch.__version__.split("+")[0].split("dev")[0].strip(".")
+            triton_v_clean = triton_version.split("+")[0].split("dev")[0].strip(".") if triton_version else "0.0.0"
+
+            is_torch_old = False
+            try:
+                if Version(torch_v_clean) < Version("2.6.0"):
+                    is_torch_old = True
+            except Exception:
+                pass
+
+            is_triton_old = False
+            try:
+                if triton_version is None or Version(triton_v_clean) < Version("3.5.0"):
+                    is_triton_old = True
+            except Exception:
+                pass
+
+            if is_torch_old or is_triton_old:
+                print(
+                    f"\n[bold yellow]* WARNING: Potential Triton/PyTorch version conflict for MXFP4 model.[/]\n"
+                    f"  Model '{settings.model}' uses MXFP4 quantization, which requires [bold]Triton >= 3.5[/] and [bold]PyTorch >= 2.6[/] "
+                    f"on older GPUs (e.g. A100, H100, RTX 30xx/40xx).\n"
+                    f"  Current environment: PyTorch [bold]{torch.__version__}[/] and Triton [bold]{triton_version or 'not installed'}[/].\n"
+                    f"  If loading fails, please upgrade your environment to [bold]PyTorch >= 2.6[/] and [bold]Triton >= 3.5[/].\n"
+                )
+
         for dtype in settings.dtypes:
             print(f"* Trying dtype [bold]{dtype}[/]...")
 
@@ -159,7 +209,16 @@ class Model:
             break
 
         if self.model is None:
-            raise Exception("Failed to load model with all configured dtypes.")
+            if is_mxfp4:
+                raise Exception(
+                    f"Failed to load model with all configured dtypes.\n\n"
+                    f"This model ('{settings.model}') is quantized using MXFP4. "
+                    f"On older GPUs (like A100, H100, or RTX 30xx/40xx), MXFP4 requires Triton >= 3.5 and PyTorch >= 2.6 to compile the required kernels. "
+                    f"Your current environment has PyTorch {torch.__version__} and Triton {triton_version or 'not installed'}. "
+                    f"Please upgrade your environment to PyTorch >= 2.6 and Triton >= 3.5 to run this model."
+                )
+            else:
+                raise Exception("Failed to load model with all configured dtypes.")
 
         self._apply_lora()
 
