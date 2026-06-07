@@ -500,6 +500,37 @@ class Settings(BaseSettings):
         description="Dataset of prompts that tend to result in refusals (used for evaluating model performance).",
     )
 
+    headless: bool = Field(
+        default=False,
+        description="Whether to run non-interactively without user prompting.",
+        exclude=True,
+    )
+
+    save_dir: str | None = Field(
+        default=None,
+        description="Path to the folder to save the decensored model to.",
+        exclude=True,
+    )
+
+    upload_repo: str | None = Field(
+        default=None,
+        description="Name of the Hugging Face repository to upload the model to.",
+        exclude=True,
+    )
+
+    merge_strategy: str | None = Field(
+        default=None,
+        description="Merge strategy to use: 'merge' or 'adapter' (default: 'merge').",
+        exclude=True,
+    )
+
+    upload_private: bool = Field(
+        default=False,
+        description="Whether the uploaded Hugging Face repository should be private.",
+        exclude=True,
+    )
+
+
     @classmethod
     def settings_customise_sources(
         cls,

@@ -5,7 +5,17 @@
 
 import sys
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
+    import os
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
 from .config import Settings
+
 
 
 def _is_help_invocation() -> bool:
@@ -260,68 +270,85 @@ def run():
         existing_study = None
 
     if existing_study is not None and settings.evaluate_model is None:
-        choices = []
-
-        if existing_study.user_attrs["finished"]:
-            print()
-            print(
-                (
-                    "[green]You have already processed this model.[/] "
-                    "You can show the results from the previous run, allowing you to export models or to run additional trials. "
-                    "Alternatively, you can ignore the previous run and start from scratch. "
-                    "This will delete the checkpoint file and all results from the previous run."
-                )
-            )
-            choices.append(
-                Choice(
-                    title="Show the results from the previous run",
-                    value="continue",
-                )
-            )
+        if settings.headless:
+            print("[yellow]Headless mode active: automatically continuing previous study.[/]")
+            choice = "continue"
         else:
-            print()
-            print(
-                (
-                    "[yellow]You have already processed this model, but the run was interrupted.[/] "
-                    "You can continue the previous run from where it stopped. This will override any specified settings. "
-                    "Alternatively, you can ignore the previous run and start from scratch. "
-                    "This will delete the checkpoint file and all results from the previous run."
+            choices = []
+
+            if existing_study.user_attrs["finished"]:
+                print()
+                print(
+                    (
+                        "[green]You have already processed this model.[/] "
+                        "You can show the results from the previous run, allowing you to export models or to run additional trials. "
+                        "Alternatively, you can ignore the previous run and start from scratch. "
+                        "This will delete the checkpoint file and all results from the previous run."
+                    )
                 )
-            )
+                choices.append(
+                    Choice(
+                        title="Show the results from the previous run",
+                        value="continue",
+                    )
+                )
+            else:
+                print()
+                print(
+                    (
+                        "[yellow]You have already processed this model, but the run was interrupted.[/] "
+                        "You can continue the previous run from where it stopped. This will override any specified settings. "
+                        "Alternatively, you can ignore the previous run and start from scratch. "
+                        "This will delete the checkpoint file and all results from the previous run."
+                    )
+                )
+                choices.append(
+                    Choice(
+                        title="Continue the previous run",
+                        value="continue",
+                    )
+                )
+
             choices.append(
                 Choice(
-                    title="Continue the previous run",
-                    value="continue",
+                    title="Ignore the previous run and start from scratch",
+                    value="restart",
                 )
             )
 
-        choices.append(
-            Choice(
-                title="Ignore the previous run and start from scratch",
-                value="restart",
+            choices.append(
+                Choice(
+                    title="Exit program",
+                    value="",
+                )
             )
-        )
 
-        choices.append(
-            Choice(
-                title="Exit program",
-                value="",
-            )
-        )
-
-        print()
-        choice = prompt_select("How would you like to proceed?", choices)
+            print()
+            choice = prompt_select("How would you like to proceed?", choices)
 
         if choice == "continue":
+            original_headless = settings.headless
+            original_save_dir = settings.save_dir
+            original_upload_repo = settings.upload_repo
+            original_merge_strategy = settings.merge_strategy
+            original_upload_private = settings.upload_private
+
             settings = Settings.model_validate_json(
                 existing_study.user_attrs["settings"]
             )
+
+            settings.headless = original_headless
+            settings.save_dir = original_save_dir
+            settings.upload_repo = original_upload_repo
+            settings.merge_strategy = original_merge_strategy
+            settings.upload_private = original_upload_private
         elif choice == "restart":
             os.unlink(study_checkpoint_file)
             backend = JournalFileBackend(study_checkpoint_file, lock_obj=lock_obj)
             storage = JournalStorage(backend)
         elif choice is None or choice == "":
             return
+
 
     model = Model(settings)
     print()
@@ -685,6 +712,154 @@ def run():
                 value="",
             )
         )
+
+        if settings.headless:
+            if not settings.save_dir and not settings.upload_repo:
+                print(
+                    "[yellow]WARNING: Headless mode active but neither --save-dir nor --upload-repo was specified. Model will not be saved or uploaded.[/]"
+                )
+
+            trial = best_trials[0]
+            print(
+                f"[green]Headless mode auto-selected [bold]Trial {trial.user_attrs['index']}[/] "
+                f"(Refusals: {trial.user_attrs['refusals']}/{len(evaluator.bad_prompts)}, "
+                f"KL divergence: {trial.user_attrs['kl_divergence']:.4f})[/]"
+            )
+
+            print()
+            print(f"Restoring model from trial [bold]{trial.user_attrs['index']}[/]...")
+            print("* Parameters:")
+            for name, value in get_trial_parameters(trial).items():
+                print(f"  * {name} = [bold]{value}[/]")
+
+            def reset_trial_model_headless() -> None:
+                print("* Resetting model...")
+                model.reset_model()
+                print("* Abliterating...")
+                model.abliterate(
+                    refusal_directions,
+                    trial.user_attrs["direction_index"],
+                    {
+                        k: AbliterationParameters(**v)
+                        for k, v in trial.user_attrs["parameters"].items()
+                    },
+                )
+
+            reset_trial_model_headless()
+
+            strategy = settings.merge_strategy or "merge"
+            if strategy not in ["merge", "adapter"]:
+                strategy = "merge"
+
+            if settings.save_dir:
+                save_directory = settings.save_dir
+                print(f"Saving decensored model to local folder: {save_directory}")
+                if strategy == "adapter":
+                    print("Saving LoRA adapter...")
+                    model.model.save_pretrained(
+                        save_directory,
+                        max_shard_size=settings.max_shard_size,
+                    )
+                else:
+                    print("Saving merged model...")
+                    merged_model = model.get_merged_model()
+                    merged_model.save_pretrained(
+                        save_directory,
+                        max_shard_size=settings.max_shard_size,
+                    )
+                    del merged_model
+                    empty_cache()
+                    model.tokenizer.save_pretrained(save_directory)
+                    if model.processor is not None:
+                        model.processor.save_pretrained(save_directory)
+                    reset_trial_model_headless()
+
+                print(f"Model saved to [bold]{save_directory}[/].")
+
+            if settings.upload_repo:
+                repo_id = settings.upload_repo
+                print(f"Uploading decensored model to Hugging Face: {repo_id}")
+                token = huggingface_hub.get_token()
+                if not token:
+                    print("[red]Error: Hugging Face access token not found. Skipping upload.[/]")
+                else:
+                    private = settings.upload_private
+                    if strategy == "adapter":
+                        print("Uploading LoRA adapter...")
+                        model.model.push_to_hub(
+                            repo_id,
+                            private=private,
+                            max_shard_size=settings.max_shard_size,
+                            token=token,
+                        )
+                    else:
+                        print("Uploading merged model...")
+                        merged_model = model.get_merged_model()
+                        merged_model.push_to_hub(
+                            repo_id,
+                            private=private,
+                            max_shard_size=settings.max_shard_size,
+                            token=token,
+                        )
+                        del merged_model
+                        empty_cache()
+                        model.tokenizer.push_to_hub(
+                            repo_id,
+                            private=private,
+                            token=token,
+                        )
+                        if model.processor is not None:
+                            model.processor.push_to_hub(
+                                repo_id,
+                                private=private,
+                                token=token,
+                            )
+                        reset_trial_model_headless()
+
+                    # Model Card
+                    if is_hf_path(settings.model):
+                        card = ModelCard.load(settings.model)
+                    else:
+                        card_path = (
+                            Path(settings.model)
+                            / huggingface_hub.constants.REPOCARD_NAME
+                        )
+                        if card_path.exists():
+                            card = ModelCard.load(card_path)
+                        else:
+                            card = None
+
+                    if card is not None:
+                        if card.data is None:
+                            card.data = ModelCardData()
+                        if card.data.tags is None:
+                            card.data.tags = []
+                        card.data.tags.extend(["heretic", "uncensored", "decensored", "abliterated"])
+                        card.data.tags.append("reproducible")
+                        card.text = (
+                            get_readme_intro(
+                                settings,
+                                trial,
+                                True,
+                            )
+                            + card.text
+                        )
+                        card.push_to_hub(repo_id, token=token)
+
+                    # Reproducibility files
+                    settings.n_trials = len(study.trials)
+                    upload_reproduce_folder(
+                        repo_id,
+                        settings,
+                        token,
+                        checkpoint_path=study_checkpoint_file,
+                        trial=trial,
+                        include_system_information=False,
+                    )
+                    print(f"Model uploaded to [bold]{repo_id}[/].")
+
+            print("[green]Headless run complete. Exiting.[/]")
+            return
 
         print()
         print("[bold green]Optimization finished![/]")
