@@ -88,7 +88,7 @@ BATCH_SIZE_REFINEMENT_THRESHOLD = 8
 
 
 def _is_oom_error(error: Exception) -> bool:
-    if isinstance(error, torch.cuda.OutOfMemoryError):
+    if isinstance(error, torch.OutOfMemoryError):
         return True
     if isinstance(error, RuntimeError) and "out of memory" in str(error).lower():
         return True
@@ -127,6 +127,11 @@ def _determine_batch_size(
 ) -> int:
     print()
     print("Determining optimal batch size...")
+
+    if not good_prompts:
+        raise ValueError("The list of good prompts must not be empty.")
+    if max_batch_size < 1:
+        raise ValueError("max_batch_size must be at least 1.")
 
     batch_size = 1
     best_batch_size = -1
