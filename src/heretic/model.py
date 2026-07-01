@@ -1062,68 +1062,45 @@ class Model:
     # We work with logprobs rather than probabilities for numerical stability
     # when computing the KL divergence.
     def get_logprobs(self, prompts: list[Prompt]) -> Tensor:
-        # We only generate one token, and we return the (log) probability distributions
-        # over the vocabulary at that token position, for each prompt.
-        _, outputs = self.generate(
-            prompts,
-            max_new_tokens=1,
-            output_logits=True,
-            output_scores=True,
-            return_dict_in_generate=True,
-            use_cache=False,
+        # We perform a manual forward pass over the inputs.
+        # This yields the logits for the next token at the last position,
+        # avoiding massive VRAM spikes in custom generate() implementations.
+        chats = [
+            [
+                {"role": "system", "content": prompt.system},
+                {"role": "user", "content": prompt.user},
+            ]
+            for prompt in prompts
+        ]
+
+        chat_prompts = cast(
+            list[str],
+            self.tokenizer.apply_chat_template(
+                chats,
+                add_generation_prompt=True,
+                tokenize=False,
+            ),
         )
 
-        # This cast is valid because GenerateDecoderOnlyOutput is the return type
-        # of model.generate with return_dict_in_generate=True.
-        outputs = cast(GenerateDecoderOnlyOutput, outputs)
-
-        # Logits for the first (only) generated token.
-        # Use raw logits, not processed generation scores; processors can insert
-        # -inf for suppressed tokens, which can make KL divergence evaluate to NaN.
-        # This cast is valid because we passed output_logits=True above.
-        logits_tuple = outputs.logits if outputs.logits is not None else outputs.scores
-        if logits_tuple is not None:
-            logits = cast(tuple[FloatTensor], logits_tuple)[0]
-        else:
-            # Fallback for custom models (like DiffusionGemma) that refuse to return scores during generate().
-            # A manual forward pass over the inputs yields the logits for the next token at the last position.
-            chats = [
-                [
-                    {"role": "system", "content": prompt.system},
-                    {"role": "user", "content": prompt.user},
-                ]
-                for prompt in prompts
-            ]
-
-            chat_prompts = cast(
-                list[str],
-                self.tokenizer.apply_chat_template(
-                    chats,
-                    add_generation_prompt=True,
-                    tokenize=False,
-                ),
-            )
-
-            if self.settings.response_prefix:
-                chat_prompts = [prompt + self.settings.response_prefix for prompt in chat_prompts]
+        if self.settings.response_prefix:
+            chat_prompts = [prompt + self.settings.response_prefix for prompt in chat_prompts]
+        
+        inputs = self.tokenizer(
+            chat_prompts,
+            return_tensors="pt",
+            padding=True,
+            return_token_type_ids=False,
+        ).to(self.model.device)
+        
+        with torch.no_grad():
+            forward_outputs = self.model(**inputs)
             
-            inputs = self.tokenizer(
-                chat_prompts,
-                return_tensors="pt",
-                padding=True,
-                return_token_type_ids=False,
-            ).to(self.model.device)
-            
-            with torch.no_grad():
-                forward_outputs = self.model(**inputs)
-            logits = forward_outputs.logits[:, -1, :]
+        logits = forward_outputs.logits[:, -1, :]
 
         # The returned tensor has shape (prompt, token).
         logprobs = F.log_softmax(logits, dim=-1)
 
         if self.settings.offload_outputs_to_cpu:
-            if outputs is not None:
-                del outputs
             del logits
             logprobs = logprobs.cpu()
             empty_cache()
