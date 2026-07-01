@@ -693,7 +693,7 @@ class Model:
                         module_index
                     ]
                     
-                    device = v.device
+                    device = matrix.device
                     good_input = good_input.to(device)
                     good_output = good_output.to(device)
                     bad_input = bad_input.to(device)
