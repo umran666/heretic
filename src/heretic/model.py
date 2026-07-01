@@ -14,6 +14,8 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from peft.tuners.lora.layer import Linear
 from torch import FloatTensor, LongTensor, Tensor
 from torch.nn import Module, ModuleList
+from torch.optim import LBFGS
+from torch.utils.hooks import RemovableHandle
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForImageTextToText,
@@ -53,6 +55,20 @@ class AbliterationParameters:
     max_weight_position: float
     min_weight: float
     min_weight_distance: float
+
+
+class AbliterationParameters:
+    max_weight: float
+    max_weight_position: float
+    min_weight: float
+    min_weight_distance: float
+
+
+# The list contains one element per layer.
+# Each element maps from the component name to a (possibly sparse) mapping
+# from the module index to an (input, output) tuple containing the I/O
+# tensors of shape (prompt, component).
+ModuleIO = list[dict[str, dict[int, tuple[Tensor, Tensor]]]]
 
 
 class Model:
@@ -102,6 +118,24 @@ class Model:
             if settings.max_memory
             else None
         )
+
+    def _is_diffusion_gemma(self) -> bool:
+        return self.settings.model == "google/diffusiongemma-26B-A4B-it"
+
+    def _get_dg_encoder(self):
+        """Extract the encoder model for DiffusionGemma"""
+        model = self.model
+        if isinstance(model, PeftModel):
+            model = model.base_model.model
+        return model.model.encoder
+
+    def _get_dg_lm_head(self):
+        """Extract the lm_head for DiffusionGemma"""
+        model = self.model
+        if isinstance(model, PeftModel):
+            model = model.base_model.model
+        return model.lm_head
+
 
         self.trusted_models = set()
 
@@ -371,6 +405,9 @@ class Model:
         if isinstance(model, PeftModel):
             model = model.base_model.model
 
+        if self._is_diffusion_gemma():
+            return self._get_dg_encoder().layers
+
         # Most multimodal models.
         with suppress(Exception):
             return model.model.language_model.layers
@@ -456,7 +493,10 @@ class Model:
         for layer_index in range(len(self.get_layers())):
             components.update(self.get_layer_modules(layer_index).keys())
 
-        return sorted(components)
+        available = sorted(components)
+        if hasattr(self.settings, "target_components") and self.settings.target_components:
+            return [c for c in available if c in self.settings.target_components]
+        return available
 
     def abliterate(
         self,
@@ -616,6 +656,84 @@ class Model:
                     weight_A.data = lora_A.to(weight_A.dtype)
                     weight_B.data = lora_B.to(weight_B.dtype)
 
+    def ara_abliterate(
+        self,
+        good_module_io: ModuleIO,
+        bad_module_io: ModuleIO,
+        start_layer_index: int,
+        end_layer_index: int,
+        preserve_good_behavior_weight: float,
+        steer_bad_behavior_weight: float,
+        tie_to_original_matrix_weight: float,
+    ):
+        for layer_index in range(start_layer_index, end_layer_index):
+            for component, modules in self.get_layer_modules(layer_index).items():
+                for module_index, module in enumerate(modules):
+                    # See above for a (partial) justification of this cast.
+                    module = cast(Linear, module)
+
+                    matrix = module.weight
+                    original_matrix = matrix.detach().clone()
+
+                    good_input, good_output = good_module_io[layer_index][component][
+                        module_index
+                    ]
+                    bad_input, bad_output = bad_module_io[layer_index][component][
+                        module_index
+                    ]
+
+                    def objective(matrix: Tensor) -> Tensor:
+                        # The results of applying the operator to inputs associated
+                        # with "good" prompts should change as little as possible.
+                        preserve_good_behavior = (
+                            (good_input @ matrix.T - good_output) ** 2
+                        ).mean()
+
+                        # On average, the outputs for "bad" prompts should resemble
+                        # the original outputs for "good" prompts (which steers the
+                        # behavior for "bad" prompts towards that for "good" prompts).
+                        steer_bad_behavior = (
+                            (
+                                (bad_input @ matrix.T).mean(dim=0)
+                                - good_output.mean(dim=0)
+                            )
+                            ** 2
+                        ).mean()
+
+                        # The matrix itself should change as little as possible overall.
+                        # This prevents overfitting due to underdetermination of the
+                        # optimization problem from a relatively small number of I/O pairs.
+                        tie_to_original_matrix = (
+                            (matrix - original_matrix) ** 2
+                        ).mean()
+
+                        return (
+                            preserve_good_behavior_weight * preserve_good_behavior
+                            + steer_bad_behavior_weight * steer_bad_behavior
+                            + tie_to_original_matrix_weight * tie_to_original_matrix
+                        )
+
+                    optimizer = LBFGS(
+                        [matrix],
+                        lr=1.0,
+                        max_iter=20,  # Number of internal iterations per step, *not* the number of steps.
+                        history_size=10,
+                        line_search_fn="strong_wolfe",
+                    )
+
+                    def closure() -> Tensor:
+                        optimizer.zero_grad()
+                        loss = objective(matrix)
+                        loss.backward()
+                        return loss
+
+                    # Convergence usually happens within 2-3 steps, so this is more than enough.
+                    for step in range(5):
+                        loss = optimizer.step(closure)
+                        print(
+                            f"\\[{layer_index}/{component}/{module_index}] Step: {step}, Loss: {loss.item():.6f}"
+                        )
+
     def generate(
         self,
         prompts: list[Prompt],
@@ -758,6 +876,144 @@ class Model:
             residuals.append(self.get_residuals(batch))
 
         return torch.cat(residuals, dim=0)
+
+    def get_module_io(
+        self,
+        prompts: list[Prompt],
+    ) -> ModuleIO:
+        module_io: ModuleIO = []
+        temporal_io: list[dict[str, dict[int, dict[str, list[Tensor]]]]] = []
+
+        def get_hook(
+            layer_index: int,
+            component: str,
+            module_index: int,
+        ):
+            def hook(
+                module: Module,
+                inputs: tuple[Tensor, ...],
+                outputs: Tensor,
+            ) -> None:
+                if len(temporal_io) == layer_index:
+                    temporal_io.append({})
+
+                assert len(temporal_io) == layer_index + 1
+
+                if component not in temporal_io[layer_index]:
+                    temporal_io[layer_index][component] = {}
+
+                if module_index not in temporal_io[layer_index][component]:
+                    temporal_io[layer_index][component][module_index] = {"inputs": [], "outputs": []}
+
+                inp = inputs[0]
+                out = outputs
+
+                # Dimensional safety for standard dense (3D) vs flattened MoE tensors (2D)
+                if inp.dim() == 3:
+                    inp = inp[:, -1, :]
+                
+                if out.dim() == 3:
+                    out = out[:, -1, :]
+
+                temporal_io[layer_index][component][module_index]["inputs"].append(inp.detach())
+                temporal_io[layer_index][component][module_index]["outputs"].append(out.detach())
+
+            return hook
+
+        hook_handles: list[RemovableHandle] = []
+
+        for layer_index in range(len(self.get_layers())):
+            for component, modules in self.get_layer_modules(layer_index).items():
+                for module_index, module in enumerate(modules):
+                    hook_handles.append(
+                        module.register_forward_hook(
+                            get_hook(layer_index, component, module_index)
+                        )
+                    )
+
+        trajectory_steps = getattr(self.settings, "ara_trajectory_steps", 15)
+        self.generate(prompts, max_new_tokens=trajectory_steps)
+
+        for hook_handle in hook_handles:
+            hook_handle.remove()
+
+        for layer_index in range(len(temporal_io)):
+            module_io.append({})
+            for component, io_map in temporal_io[layer_index].items():
+                module_io[layer_index][component] = {}
+                for module_index, trajectory in io_map.items():
+                    if trajectory["inputs"]:
+                        try:
+                            avg_input = torch.stack(trajectory["inputs"]).mean(dim=0)
+                            avg_output = torch.stack(trajectory["outputs"]).mean(dim=0)
+                        except RuntimeError:
+                            # MoE experts may process varying token counts per step, causing stack() to fail
+                            # In this case, we concatenate across the temporal axis 
+                            avg_input = torch.cat(trajectory["inputs"], dim=0)
+                            avg_output = torch.cat(trajectory["outputs"], dim=0)
+                        
+                        module_io[layer_index][component][module_index] = (avg_input, avg_output)
+
+        return module_io
+
+    def get_module_io_batched(
+        self,
+        prompts: list[Prompt],
+    ) -> ModuleIO:
+        # Aggregating batch results is more complicated for module I/O
+        # than for other get_*_batched methods, because the structure of the results
+        # might differ between batches, as whether individual modules activate
+        # can depend on the prompt (in particular for MoE models).
+        # In practice, inhomogeneous results should be very rare, but to be fully
+        # generic, this logic is required.
+        module_io_batches: list[ModuleIO] = [
+            self.get_module_io(batch)
+            for batch in batchify(prompts, self.settings.batch_size)
+        ]
+
+        module_io: ModuleIO = []
+
+        for layer_index in range(len(self.get_layers())):
+            module_io.append({})
+
+            for module_io_batch in module_io_batches:
+                for component, io_map in module_io_batch[layer_index].items():
+                    if component not in module_io[layer_index]:
+                        module_io[layer_index][component] = {}
+
+                    for module_index in io_map:
+                        if module_index not in module_io[layer_index][component]:
+                            # This is a placeholder; the actual aggregation happens below.
+                            # We need to iterate over the batches twice because we don't
+                            # know in advance which components and module indices are present.
+                            module_io[layer_index][component][module_index] = (
+                                torch.empty(0),
+                                torch.empty(0),
+                            )
+
+            for component, io_map in module_io[layer_index].items():
+                for module_index in io_map:
+                    inputs_outputs = [
+                        module_io_batch[layer_index][component][module_index]
+                        for module_io_batch in module_io_batches
+                        if component in module_io_batch[layer_index]
+                        and module_index in module_io_batch[layer_index][component]
+                    ]
+                    input = torch.cat(
+                        [input_output[0] for input_output in inputs_outputs],
+                        dim=0,
+                    )
+                    output = torch.cat(
+                        [input_output[1] for input_output in inputs_outputs],
+                        dim=0,
+                    )
+
+                    # The key already exists, and replacing existing values
+                    # in a dictionary while iterating over the same dictionary
+                    # is safe in Python.
+                    module_io[layer_index][component][module_index] = (input, output)
+
+        return module_io
 
     def get_residuals_mean(self, prompts: list[Prompt]) -> Tensor:
         if not prompts:

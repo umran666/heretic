@@ -62,6 +62,22 @@ class DatasetSpecification(BaseModel):
         description="Column in the dataset that contains the prompts. Required for datasets, ignored for plain text files.",
     )
 
+    target_components: list[str] = Field(
+        default=["attn.o_proj"],
+        description=(
+            "List of component names to target for abliteration. "
+            'Currently supported values are "attn.o_proj" and "mlp.down_proj".'
+        ),
+    )
+
+    use_ara: bool = Field(
+        default=True,
+        description=(
+            "Whether to use Arbitrary-Rank Ablation (ARA), an abliteration method based on matrix optimization, "
+            "instead of traditional directional ablation."
+        ),
+    )
+
     prefix: str = Field(
         default="",
         description="Text to prepend to each prompt.",

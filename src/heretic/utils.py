@@ -217,17 +217,24 @@ def batchify(items: list[T], batch_size: int) -> list[list[T]]:
     return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
 
 
-def get_trial_parameters(trial: Trial | FrozenTrial) -> dict[str, str]:
+def get_trial_parameters(trial: Trial | FrozenTrial, settings: Settings | None = None) -> dict[str, str]:
     params = {}
 
-    direction_index = trial.user_attrs["direction_index"]
-    params["direction_index"] = (
-        "per layer" if (direction_index is None) else f"{direction_index:.2f}"
-    )
+    if settings and getattr(settings, "use_ara", False):
+        params["start_layer_index"] = str(trial.params.get("start_layer_index", ""))
+        params["end_layer_index"] = str(trial.params.get("end_layer_index", ""))
+        params["preserve_good_behavior_weight"] = f"{trial.params.get('preserve_good_behavior_weight', 0.0):.2f}"
+        params["steer_bad_behavior_weight"] = f"{trial.params.get('steer_bad_behavior_weight', 0.0):.2f}"
+        params["tie_to_original_matrix_weight"] = f"{trial.params.get('tie_to_original_matrix_weight', 0.0):.2f}"
+    else:
+        direction_index = trial.user_attrs.get("direction_index")
+        params["direction_index"] = (
+            "per layer" if (direction_index is None) else f"{direction_index:.2f}"
+        )
 
-    for component, parameters in trial.user_attrs["parameters"].items():
-        for name, value in parameters.items():
-            params[f"{component}.{name}"] = f"{value:.2f}"
+        for component, parameters in trial.user_attrs.get("parameters", {}).items():
+            for name, value in parameters.items():
+                params[f"{component}.{name}"] = f"{value:.2f}"
 
     return params
 
@@ -265,7 +272,7 @@ def get_readme_intro(
         chr(10).join(
             [
                 f"| **{name}** | {value} |"
-                for name, value in get_trial_parameters(trial).items()
+                for name, value in get_trial_parameters(trial, settings).items()
             ]
         )
     }
