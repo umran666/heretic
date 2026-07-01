@@ -183,7 +183,8 @@ class Model:
         if self.model is None:
             raise Exception("Failed to load model with all configured dtypes.")
 
-        self._apply_lora()
+        if not getattr(settings, "use_ara", False):
+            self._apply_lora()
 
         # LoRA B matrices are initialized to zero by default in PEFT,
         # so we don't need to do anything manually.
@@ -279,6 +280,10 @@ class Model:
         return None
 
     def get_merged_model(self) -> PreTrainedModel:
+        if getattr(self.settings, "use_ara", False):
+            # ARA models do not use PEFT LoRA wrappers
+            return self.model
+            
         # Guard against calling this method at the wrong time.
         assert isinstance(self.model, PeftModel)
 
@@ -738,6 +743,9 @@ class Model:
                         print(
                             f"\\[{layer_index}/{component}/{module_index}] Step: {step}, Loss: {loss.item():.6f}"
                         )
+
+        # Ensure base weights are reloaded on the next trial since they were modified in-place
+        self.needs_reload = True
 
     def generate(
         self,
