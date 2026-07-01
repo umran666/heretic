@@ -785,6 +785,9 @@ class Model:
             return_token_type_ids=False,
         ).to(self.model.device)
 
+        if self._is_diffusion_gemma() and "use_cache" in kwargs:
+            del kwargs["use_cache"]
+
         # FIXME: The type checker has been disabled here because of the extremely complex
         #        interplay between different generate() signatures and dynamic delegation.
         outputs = self.model.generate(
