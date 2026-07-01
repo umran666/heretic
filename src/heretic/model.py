@@ -118,25 +118,6 @@ class Model:
             if settings.max_memory
             else None
         )
-
-    def _is_diffusion_gemma(self) -> bool:
-        return self.settings.model == "google/diffusiongemma-26B-A4B-it"
-
-    def _get_dg_encoder(self):
-        """Extract the encoder model for DiffusionGemma"""
-        model = self.model
-        if isinstance(model, PeftModel):
-            model = model.base_model.model
-        return model.model.encoder
-
-    def _get_dg_lm_head(self):
-        """Extract the lm_head for DiffusionGemma"""
-        model = self.model
-        if isinstance(model, PeftModel):
-            model = model.base_model.model
-        return model.lm_head
-
-
         self.trusted_models = set()
 
         for dtype in settings.dtypes:
@@ -345,6 +326,23 @@ class Model:
             # Mark for full reload if user switches trials later.
             self.needs_reload = True
             return merged_model
+
+    def _is_diffusion_gemma(self) -> bool:
+        return self.settings.model == "google/diffusiongemma-26B-A4B-it"
+
+    def _get_dg_encoder(self):
+        """Extract the encoder model for DiffusionGemma"""
+        model = self.model
+        if isinstance(model, PeftModel):
+            model = model.base_model.model
+        return model.model.encoder
+
+    def _get_dg_lm_head(self):
+        """Extract the lm_head for DiffusionGemma"""
+        model = self.model
+        if isinstance(model, PeftModel):
+            model = model.base_model.model
+        return model.lm_head
 
     def reset_model(self):
         """
