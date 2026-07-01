@@ -1122,7 +1122,9 @@ class Model:
         logprobs = F.log_softmax(logits, dim=-1)
 
         if self.settings.offload_outputs_to_cpu:
-            del outputs, logits
+            if outputs is not None:
+                del outputs
+            del logits
             logprobs = logprobs.cpu()
             empty_cache()
 
