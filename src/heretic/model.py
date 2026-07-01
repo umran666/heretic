@@ -397,7 +397,8 @@ class Model:
             **extra_kwargs,
         )
 
-        self._apply_lora()
+        if not getattr(self.settings, "use_ara", False):
+            self._apply_lora()
 
         self.needs_reload = False
 
