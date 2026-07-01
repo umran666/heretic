@@ -404,8 +404,18 @@ class Model:
             model = model.base_model.model
 
         if self._is_diffusion_gemma():
-            return self._get_dg_encoder().layers
-
+            encoder = self._get_dg_encoder()
+            if hasattr(encoder, "layers"): return encoder.layers
+            if hasattr(encoder, "layer"): return encoder.layer
+            if hasattr(encoder, "blocks"): return encoder.blocks
+            if hasattr(encoder, "block"): return encoder.block
+            
+            # Dynamic fallback: find the first ModuleList
+            import torch.nn as nn
+            for name, module in encoder.named_children():
+                if isinstance(module, nn.ModuleList):
+                    return module
+            raise ValueError(f"Could not find layers in {type(encoder)}")
         # Most multimodal models.
         with suppress(Exception):
             return model.model.language_model.layers
