@@ -1086,7 +1086,23 @@ class Model:
         else:
             # Fallback for custom models (like DiffusionGemma) that refuse to return scores during generate().
             # A manual forward pass over the inputs yields the logits for the next token at the last position.
-            chat_prompts = [prompt.format() for prompt in prompts]
+            chats = [
+                [
+                    {"role": "system", "content": prompt.system},
+                    {"role": "user", "content": prompt.user},
+                ]
+                for prompt in prompts
+            ]
+
+            chat_prompts = cast(
+                list[str],
+                self.tokenizer.apply_chat_template(
+                    chats,
+                    add_generation_prompt=True,
+                    tokenize=False,
+                ),
+            )
+
             if self.settings.response_prefix:
                 chat_prompts = [prompt + self.settings.response_prefix for prompt in chat_prompts]
             
