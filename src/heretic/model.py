@@ -1067,6 +1067,7 @@ class Model:
             prompts,
             max_new_tokens=1,
             output_logits=True,
+            output_scores=True,
             return_dict_in_generate=True,
             use_cache=False,
         )
@@ -1080,7 +1081,25 @@ class Model:
         # -inf for suppressed tokens, which can make KL divergence evaluate to NaN.
         # This cast is valid because we passed output_logits=True above.
         logits_tuple = outputs.logits if outputs.logits is not None else outputs.scores
-        logits = cast(tuple[FloatTensor], logits_tuple)[0]
+        if logits_tuple is not None:
+            logits = cast(tuple[FloatTensor], logits_tuple)[0]
+        else:
+            # Fallback for custom models (like DiffusionGemma) that refuse to return scores during generate().
+            # A manual forward pass over the inputs yields the logits for the next token at the last position.
+            chat_prompts = [prompt.format() for prompt in prompts]
+            if self.settings.response_prefix:
+                chat_prompts = [prompt + self.settings.response_prefix for prompt in chat_prompts]
+            
+            inputs = self.tokenizer(
+                chat_prompts,
+                return_tensors="pt",
+                padding=True,
+                return_token_type_ids=False,
+            ).to(self.model.device)
+            
+            with torch.no_grad():
+                forward_outputs = self.model(**inputs)
+            logits = forward_outputs.logits[:, -1, :]
 
         # The returned tensor has shape (prompt, token).
         logprobs = F.log_softmax(logits, dim=-1)
