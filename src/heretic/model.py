@@ -797,7 +797,7 @@ class Model:
             do_sample=False,  # Use greedy decoding to ensure deterministic outputs.
         )  # ty:ignore[call-non-callable]
 
-        if not isinstance(outputs, Tensor):
+        if not kwargs.get("return_dict_in_generate", False) and not isinstance(outputs, Tensor):
             outputs = outputs.sequences if hasattr(outputs, "sequences") else outputs[0]
 
         return inputs, outputs
