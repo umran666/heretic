@@ -415,7 +415,7 @@ class Model:
             for name, module in encoder.named_children():
                 if isinstance(module, nn.ModuleList):
                     return module
-            raise ValueError(f"Could not find layers in {type(encoder)}")
+            raise ValueError(f"Could not find layers in {type(encoder)}. Available attributes: {dir(encoder)}. Named children: {[name for name, _ in encoder.named_children()]}")
         # Most multimodal models.
         with suppress(Exception):
             return model.model.language_model.layers
