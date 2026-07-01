@@ -692,6 +692,12 @@ class Model:
                     bad_input, bad_output = bad_module_io[layer_index][component][
                         module_index
                     ]
+                    
+                    device = v.device
+                    good_input = good_input.to(device)
+                    good_output = good_output.to(device)
+                    bad_input = bad_input.to(device)
+                    bad_output = bad_output.to(device)
 
                     def objective(matrix: Tensor) -> Tensor:
                         # The results of applying the operator to inputs associated
@@ -738,12 +744,14 @@ class Model:
                         loss.backward()
                         return loss
 
-                    # Convergence usually happens within 2-3 steps, so this is more than enough.
                     for step in range(5):
                         loss = optimizer.step(closure)
                         print(
                             f"\\[{layer_index}/{component}/{module_index}] Step: {step}, Loss: {loss.item():.6f}"
                         )
+                        
+                    del good_input, good_output, bad_input, bad_output, matrix, original_matrix, optimizer
+                    empty_cache()
 
         # Ensure base weights are reloaded on the next trial since they were modified in-place
         self.needs_reload = True
@@ -935,8 +943,8 @@ class Model:
                 if out.dim() == 3:
                     out = out[:, -1, :]
 
-                temporal_io[layer_index][component][module_index]["inputs"].append(inp.detach())
-                temporal_io[layer_index][component][module_index]["outputs"].append(out.detach())
+                temporal_io[layer_index][component][module_index]["inputs"].append(inp.detach().cpu())
+                temporal_io[layer_index][component][module_index]["outputs"].append(out.detach().cpu())
 
             return hook
 
