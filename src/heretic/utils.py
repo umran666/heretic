@@ -186,8 +186,6 @@ def load_prompts(
                 split=split_str,
                 # Don't require the number of examples (lines) per split to be pre-defined.
                 verification_mode=VerificationMode.NO_CHECKS,
-                # But also don't use cached data, as the dataset may have changed on disk.
-                download_mode=DownloadMode.FORCE_REDOWNLOAD,
             )
 
         prompts = list(dataset[specification.column])
