@@ -1079,7 +1079,8 @@ class Model:
         # Use raw logits, not processed generation scores; processors can insert
         # -inf for suppressed tokens, which can make KL divergence evaluate to NaN.
         # This cast is valid because we passed output_logits=True above.
-        logits = cast(tuple[FloatTensor], outputs.logits)[0]
+        logits_tuple = outputs.logits if outputs.logits is not None else outputs.scores
+        logits = cast(tuple[FloatTensor], logits_tuple)[0]
 
         # The returned tensor has shape (prompt, token).
         logprobs = F.log_softmax(logits, dim=-1)
