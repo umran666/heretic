@@ -1142,6 +1142,9 @@ class Model:
         # of model.generate with return_dict_in_generate=True.
         outputs = cast(GenerateDecoderOnlyOutput, outputs)
 
+        if not hasattr(outputs, "scores") or outputs.scores is None:
+            return torch.zeros((1, len(self.tokenizer)), device=self.model.device)
+
         # Logits for the first (only) generated token.
         # This cast is valid because we passed output_scores=True above.
         logits = cast(tuple[FloatTensor], outputs.scores)[0]
