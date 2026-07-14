@@ -868,13 +868,13 @@ class Model:
         prompts: list[Prompt],
         **kwargs: Any,
     ) -> tuple[BatchEncoding, GenerateDecoderOnlyOutput | LongTensor]:
-        chats = [
-            [
-                {"role": "system", "content": prompt.system},
-                {"role": "user", "content": prompt.user},
-            ]
-            for prompt in prompts
-        ]
+        chats = []
+        for prompt in prompts:
+            messages = []
+            if prompt.system:
+                messages.append({"role": "system", "content": prompt.system})
+            messages.append({"role": "user", "content": prompt.user})
+            chats.append(messages)
 
         # This cast is valid because list[str] is the return type
         # for batched operation with tokenize=False.
