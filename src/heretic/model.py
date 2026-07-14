@@ -916,16 +916,15 @@ class Model:
     def coherence_check(self) -> None:
         """Generate responses to a few harmless prompts to verify model coherence."""
         test_prompts = [
-            Prompt("What is the capital of France?"),
-            Prompt("Explain photosynthesis in one sentence."),
-            Prompt("Write a short poem about the ocean."),
+            Prompt(system="", user="What is the capital of France?"),
+            Prompt(system="", user="Explain photosynthesis in one sentence."),
+            Prompt(system="", user="Write a short poem about the ocean."),
         ]
         responses = self.get_responses(test_prompts, skip_special_tokens=True)
         print("  * [bold]Coherence Check[/] (harmless prompt responses):")
         for prompt, response in zip(test_prompts, responses):
-            # Truncate long responses for readability
             short = response.strip()[:200]
-            print(f"    Q: {prompt}")
+            print(f"    Q: {prompt.user}")
             print(f"    A: {short}")
             print()
 
