@@ -385,7 +385,7 @@ class Model:
         model = self.model
         if isinstance(model, PeftModel):
             model = model.base_model.model
-        return model.model.encoder
+        return model.model.encoder.language_model
 
     def snapshot_ara_weights(self) -> None:
         """Snapshot weights of all abliterable modules to CPU for fast ARA reset."""
