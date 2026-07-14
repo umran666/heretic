@@ -60,10 +60,10 @@ class ARAParameters:
     end_layer_index: int
     preserve_good_behavior_weight: float
     steer_bad_behavior_weight: float
-    steer_core_weight: float | None = None
-    steer_late_weight: float | None = None
     overcorrect_relative_weight: float
     neighbor_count: int
+    steer_core_weight: float | None = None
+    steer_late_weight: float | None = None
 
     def get_steer_weight(self, layer_index: int) -> float:
         """
