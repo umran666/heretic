@@ -908,6 +908,9 @@ class Model:
             do_sample=False,  # Use greedy decoding to ensure deterministic outputs.
         )  # ty:ignore[call-non-callable]
 
+        if not isinstance(outputs, Tensor):
+            outputs = outputs.sequences
+
         return inputs, outputs
 
     def get_responses(
