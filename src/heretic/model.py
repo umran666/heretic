@@ -249,6 +249,12 @@ class Model:
 
         # self.peft_config is a LoraConfig object rather than a dictionary,
         # so the result is a PeftModel rather than a PeftMixedModel.
+        if not hasattr(self.model, "prepare_inputs_for_generation"):
+            # Workaround for PEFT trying to proxy prepare_inputs_for_generation
+            # for CAUSAL_LM task types even if the underlying model lacks it 
+            # (e.g. DiffusionGemma block-diffusion models).
+            self.model.prepare_inputs_for_generation = lambda *args, **kwargs: {}
+            
         self.model = cast(PeftModel, get_peft_model(self.model, self.peft_config))
 
         display_targets = sorted({name.rsplit(".", 1)[-1] for name in target_modules})
