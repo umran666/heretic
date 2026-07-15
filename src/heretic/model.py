@@ -1143,7 +1143,27 @@ class Model:
         outputs = cast(GenerateDecoderOnlyOutput, outputs)
 
         if not hasattr(outputs, "scores") or outputs.scores is None:
-            return torch.zeros((1, len(self.tokenizer)), device=self.model.device)
+            # Fallback for models that do not output next-token distribution via generation (e.g. DiffusionGemma).
+            # We do a direct forward pass over a deterministic randomly-initialized canvas to compute a fixed proxy distribution.
+            inputs = self._tokenize(prompts)
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+            
+            # For DiffusionGemma, providing decoder_input_ids bypasses the random initialization,
+            # ensuring a deterministic and comparable forward pass for KLD computation.
+            batch_size = inputs["input_ids"].shape[0]
+            canvas_length = getattr(self.model.config, "canvas_length", 256)
+            decoder_input_ids = torch.zeros((batch_size, canvas_length), dtype=torch.long, device=self.model.device)
+            inputs["decoder_input_ids"] = decoder_input_ids
+            
+            with torch.inference_mode():
+                out = self.model(**inputs)
+                
+            # Logits are [batch, canvas_length, vocab]
+            logits = out.logits
+            
+            # Average over the canvas length to get a [batch, vocab] distribution representation
+            logits = logits.mean(dim=1)
+            return F.log_softmax(logits, dim=-1)
 
         # Logits for the first (only) generated token.
         # This cast is valid because we passed output_scores=True above.
