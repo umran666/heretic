@@ -863,21 +863,14 @@ class Model:
                             break
                         prev_loss = loss_val
 
-    def generate(
-        self,
-        prompts: list[Prompt],
-        **kwargs: Any,
-    ) -> tuple[BatchEncoding, GenerateDecoderOnlyOutput | LongTensor]:
+    def _get_inputs(self, prompts: list[Prompt]) -> dict[str, torch.Tensor]:
         chats = []
         for prompt in prompts:
-            messages = []
+            chat = [{"role": "user", "content": prompt.user}]
             if prompt.system:
-                messages.append({"role": "system", "content": prompt.system})
-            messages.append({"role": "user", "content": prompt.user})
-            chats.append(messages)
+                chat.insert(0, {"role": "system", "content": prompt.system})
+            chats.append(chat)
 
-        # This cast is valid because list[str] is the return type
-        # for batched operation with tokenize=False.
         chat_prompts = cast(
             list[str],
             self.tokenizer.apply_chat_template(
@@ -888,16 +881,21 @@ class Model:
         )
 
         if self.response_prefix:
-            # Append the common response prefix to the prompts so that evaluation happens
-            # at the point where responses start to differ for different prompts.
             chat_prompts = [prompt + self.response_prefix for prompt in chat_prompts]
 
-        inputs = self.tokenizer(
+        return self.tokenizer(
             chat_prompts,
             return_tensors="pt",
             padding=True,
             return_token_type_ids=False,
         ).to(self.model.device)
+
+    def generate(
+        self,
+        prompts: list[Prompt],
+        **kwargs: Any,
+    ) -> tuple[BatchEncoding, GenerateDecoderOnlyOutput | LongTensor]:
+        inputs = self._get_inputs(prompts)
 
         # FIXME: The type checker has been disabled here because of the extremely complex
         #        interplay between different generate() signatures and dynamic delegation.
@@ -1145,7 +1143,7 @@ class Model:
         if not hasattr(outputs, "scores") or outputs.scores is None:
             # Fallback for models that do not output next-token distribution via generation (e.g. DiffusionGemma).
             # We do a direct forward pass over a deterministic randomly-initialized canvas to compute a fixed proxy distribution.
-            inputs = self._tokenize(prompts)
+            inputs = self._get_inputs(prompts)
             inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
             
             # For DiffusionGemma, providing decoder_input_ids bypasses the random initialization,
